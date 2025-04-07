@@ -10,6 +10,37 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
+import sys
+import traceback
+
+# Set environment variables before importing pyppeteer
+print("Setting environment variables to disable Chromium download...")
+os.environ["PYPPETEER_SKIP_CHROMIUM_DOWNLOAD"] = "1"
+os.environ["PYPPETEER_EXECUTABLE_PATH"] = r"c:\users\qq\.pyppeteer\chrome\chrome-win\chrome.exe"
+
+# Import and patch pyppeteer before HTMLSession is created
+import pyppeteer.launcher
+
+# Save the original __init__ function
+original_init = pyppeteer.launcher.Launcher.__init__
+
+# Create a patched version that doesn't download Chromium
+def patched_init(self, *args, **kwargs):
+    print("Patched Launcher.__init__ called")
+    # Force executable path to our local Chromium
+    kwargs['executablePath'] = r"c:\users\qq\.pyppeteer\chrome\chrome-win\chrome.exe"
+    # Call original with our modified kwargs
+    return original_init(self, *args, **kwargs)
+
+# Apply the patch
+pyppeteer.launcher.Launcher.__init__ = patched_init
+
+# Also patch the download_chromium function to do nothing
+def no_download(*args, **kwargs):
+    print("Download attempt blocked by monkey patch")
+    return r"c:\users\qq\.pyppeteer\chrome\chrome-win\chrome.exe"
+
+pyppeteer.launcher.download_chromium = no_download
 
 def download_image(img_url):
     """Descargar imagen desde URL"""
@@ -38,14 +69,32 @@ def scrape_scribd_document(document_id, title):
     base_url = f"https://www.scribd.com/document/{document_id}/{title}"
 
     try:
+        print("Iniciando scraping de Scribd...")
         # Usar requests-html para renderizar JavaScript
         session = HTMLSession()
+        print("Obteniendo página...")
         response = session.get(base_url)
-        response.html.render(timeout=30)
+        
+        # Configurar opciones para render
+        render_options = {
+            'timeout': 30,
+            'sleep': 1,
+            'keep_page': True
+        }
+        
+        # Renderizar la página
+        print("Renderizando página con JavaScript...")
+        try:
+            response.html.render(**render_options)
+        except Exception as e:
+            print(f"Error durante renderizado: {e}")
+            print("Stacktrace:")
+            traceback.print_exc()
+            raise
 
         # Analizar contenido con BeautifulSoup
         soup = BeautifulSoup(response.html.html, 'html.parser')
-
+        
         # Preparar directorios
         os.makedirs('images', exist_ok=True)
 
