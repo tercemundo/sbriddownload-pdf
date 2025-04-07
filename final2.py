@@ -1,5 +1,4 @@
 import requests
-from requests_html import HTMLSession
 from bs4 import BeautifulSoup
 import argparse
 import os
@@ -10,42 +9,31 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
-import sys
-import traceback
+import time
+import random
 
-# Set environment variables before importing pyppeteer
-print("Setting environment variables to disable Chromium download...")
-os.environ["PYPPETEER_SKIP_CHROMIUM_DOWNLOAD"] = "1"
-os.environ["PYPPETEER_EXECUTABLE_PATH"] = r"c:\users\qq\.pyppeteer\chrome\chrome-win\chrome.exe"
+# Configurar headers para simular un navegador real
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.2 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
+]
 
-# Import and patch pyppeteer before HTMLSession is created
-import pyppeteer.launcher
-
-# Save the original __init__ function
-original_init = pyppeteer.launcher.Launcher.__init__
-
-# Create a patched version that doesn't download Chromium
-def patched_init(self, *args, **kwargs):
-    print("Patched Launcher.__init__ called")
-    # Force executable path to our local Chromium
-    kwargs['executablePath'] = r"c:\users\qq\.pyppeteer\chrome\chrome-win\chrome.exe"
-    # Call original with our modified kwargs
-    return original_init(self, *args, **kwargs)
-
-# Apply the patch
-pyppeteer.launcher.Launcher.__init__ = patched_init
-
-# Also patch the download_chromium function to do nothing
-def no_download(*args, **kwargs):
-    print("Download attempt blocked by monkey patch")
-    return r"c:\users\qq\.pyppeteer\chrome\chrome-win\chrome.exe"
-
-pyppeteer.launcher.download_chromium = no_download
+def get_headers():
+    return {
+        'User-Agent': random.choice(USER_AGENTS),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+    }
 
 def download_image(img_url):
     """Descargar imagen desde URL"""
     try:
-        response = requests.get(img_url)
+        response = requests.get(img_url, headers=get_headers())
         if response.status_code == 200:
             # Guardar imagen
             filename = os.path.basename(img_url)
@@ -65,35 +53,36 @@ def extract_table_of_contents(text):
     return [(section, title.strip()) for section, title in matches]
 
 def scrape_scribd_document(document_id, title):
-    """Raspar documento de Scribd"""
+    """Raspar documento de Scribd sin usar Chromium"""
     base_url = f"https://www.scribd.com/document/{document_id}/{title}"
-
+    print(f"Iniciando scraping de {base_url}")
+    
     try:
-        print("Iniciando scraping de Scribd...")
-        # Usar requests-html para renderizar JavaScript
-        session = HTMLSession()
-        print("Obteniendo página...")
-        response = session.get(base_url)
-        
-        # Configurar opciones para render
-        render_options = {
-            'timeout': 30,
-            'sleep': 1,
-            'keep_page': True
-        }
-        
-        # Renderizar la página
-        print("Renderizando página con JavaScript...")
-        try:
-            response.html.render(**render_options)
-        except Exception as e:
-            print(f"Error durante renderizado: {e}")
-            print("Stacktrace:")
-            traceback.print_exc()
-            raise
-
-        # Analizar contenido con BeautifulSoup
-        soup = BeautifulSoup(response.html.html, 'html.parser')
+        # Realizar múltiples intentos para obtener el contenido
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                print(f"Intento {attempt+1} de {max_attempts}")
+                # Obtener la página con requests
+                response = requests.get(base_url, headers=get_headers(), timeout=30)
+                response.raise_for_status()  # Verificar si hay errores HTTP
+                
+                # Analizar con BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Verificar si tenemos contenido significativo
+                if len(soup.text) < 500 and attempt < max_attempts - 1:
+                    print("Contenido insuficiente, reintentando...")
+                    time.sleep(2)  # Esperar antes de reintentar
+                    continue
+                
+                break  # Si llegamos aquí, tenemos contenido
+            except requests.RequestException as e:
+                print(f"Error en la solicitud: {e}")
+                if attempt < max_attempts - 1:
+                    time.sleep(2)  # Esperar antes de reintentar
+                else:
+                    raise
         
         # Preparar directorios
         os.makedirs('images', exist_ok=True)
@@ -102,8 +91,15 @@ def scrape_scribd_document(document_id, title):
         text_content = ""
         images_list = []
 
-        # Buscar elementos de texto
-        text_elements = soup.find_all(['p', 'div'], class_=re.compile('text|content'))
+        # Buscar elementos de texto - intentar diferentes selectores que podrían contener el contenido
+        text_elements = []
+        text_elements.extend(soup.find_all(['p', 'div'], class_=re.compile('text|content')))
+        text_elements.extend(soup.find_all(['p', 'div'], id=re.compile('text|content')))
+        text_elements.extend(soup.select('.document-content .page'))
+        
+        # Si no encontramos nada específico, intentar con todos los párrafos
+        if not text_elements:
+            text_elements = soup.find_all('p')
 
         for element in text_elements:
             # Extraer texto
@@ -116,7 +112,7 @@ def scrape_scribd_document(document_id, title):
             # Extraer imágenes
             images = element.find_all('img')
             for img in images:
-                img_url = img.get('src')
+                img_url = img.get('src') or img.get('data-src')
                 if img_url and img_url.startswith(('http', 'https')):
                     downloaded_img = download_image(img_url)
                     if downloaded_img:
@@ -139,6 +135,8 @@ def scrape_scribd_document(document_id, title):
 
     except Exception as e:
         print(f"Error de raspado: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None
 
 def create_pdf_with_toc_and_images(input_file, output_file, images_list=None):
@@ -212,8 +210,8 @@ def create_pdf_with_toc_and_images(input_file, output_file, images_list=None):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Scrapeador y Generador de PDF de Scribd',
-        epilog='Ejemplo: python script.py 123456/Título-del-Documento'
+        description='Scrapeador y Generador de PDF de Scribd (Sin Chromium)',
+        epilog='Ejemplo: python final2.py 123456/Título-del-Documento'
     )
     parser.add_argument('url', help='URL de Scribd en formato: document_id/title')
 
